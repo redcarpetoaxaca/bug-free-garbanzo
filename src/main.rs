@@ -1,56 +1,38 @@
-#![feature(async_await)]
+extern crate tokio;
 
-use std::io;
+use tokio::prelude::*;
+use tokio::io::copy;
+use tokio::net::TcpListener;
 
-use futures::StreamExt;
-use futures::executor::{self, ThreadPool};
-use futures::io::AsyncWriteExt;
-use futures::task::{SpawnExt};
+fn main() {
+    // Bind the server's socket.
+    let addr = "127.0.0.1:12345".parse().unwrap();
+    let listener = TcpListener::bind(&addr)
+        .expect("unable to bind TCP listener");
 
-use rand::seq::SliceRandom;
+    // Pull out a stream of sockets for incoming connections
+    let server = listener.incoming()
+        .map_err(|e| eprintln!("accept failed = {:?}", e))
+        .for_each(|sock| {
+            // Split up the reading and writing parts of the
+            // socket.
+            let (reader, writer) = sock.split();
 
-use romio::{TcpListener, TcpStream};
+            // A future that echos the data and returns how
+            // many bytes were copied...
+            let bytes_copied = copy(reader, writer);
 
-const SHAKESPEARE: &[&[u8]] = &[
-    b"Now is the winter of our discontent\nMade glorious summer by this sun of York.\n",
-    b"Some are born great, some achieve greatness\nAnd some have greatness thrust upon them.\n",
-    b"Friends, Romans, countrymen - lend me your ears!\nI come not to praise Caesar, but to bury him.\n",
-    b"The evil that men do lives after them\nThe good is oft interred with their bones.\n",
-    b"                  It is a tale\nTold by an idiot, full of sound and fury\nSignifying nothing.\n",
-    b"Ay me! For aught that I could ever read,\nCould ever hear by tale or history,\nThe course of true love never did run smooth.\n",
-    b"I have full cause of weeping, but this heart\nShall break into a hundred thousand flaws,\nOr ere I'll weep.-O Fool, I shall go mad!\n",
-    b"                  Each your doing,\nSo singular in each particular,\nCrowns what you are doing in the present deed,\nThat all your acts are queens.\n",
-];
+            // ... after which we'll print what happened.
+            let handle_conn = bytes_copied.map(|amt| {
+                println!("wrote {:?} bytes", amt)
+            }).map_err(|err| {
+                eprintln!("IO error {:?}", err)
+            });
 
-fn main() -> io::Result<()> {
-    executor::block_on(async {
-        let mut threadpool = ThreadPool::new()?;
+            // Spawn the future as a concurrent task.
+            tokio::spawn(handle_conn)
+        });
 
-        let listener = TcpListener::bind(&"127.0.0.1:7878".parse().unwrap())?;
-        let mut incoming = listener.incoming();
-
-        println!("Listening on 127.0.0.1:7878");
-
-        while let Some(stream) = incoming.next().await {
-            let stream = stream?;
-            let addr = stream.peer_addr()?;
-
-            threadpool.spawn(async move {
-                println!("Accepting stream from: {}", addr);
-
-                recite_shakespeare(stream).await.unwrap();
-
-                println!("Closing stream from: {}", addr);
-            }).unwrap();
-        }
-
-        Ok(())
-    })
-}
-
-async fn recite_shakespeare(mut stream: TcpStream) -> io::Result<()> {
-    //stream.set_keepalive(None);
-    let &quote = SHAKESPEARE.choose(&mut rand::thread_rng()).unwrap();
-    stream.write_all(quote).await?;
-    Ok(())
+    // Start the Tokio runtime
+    tokio::run(server);
 }
